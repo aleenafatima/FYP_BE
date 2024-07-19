@@ -1,11 +1,13 @@
-from flask import Flask, request, send_from_directory, render_template
+from flask import Flask, request, send_from_directory, jsonify
 import os
+from flask_cors import CORS
 import cv2
 from ultralytics import YOLO
 import numpy as np
 import random
 
 app = Flask(__name__)
+CORS(app)
 
 # Define paths
 UPLOAD_FOLDER = 'uploads'
@@ -120,7 +122,7 @@ def track_ball(input_video_path, output_video_path, slow_factor=2):
     cap = cv2.VideoCapture(input_video_path)
     if not cap.isOpened():
         print(f"Error opening video file '{input_video_path}'")
-        return [], 0
+        return [], 
 
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -187,47 +189,12 @@ def track_ball(input_video_path, output_video_path, slow_factor=2):
     return trajectory_points, frame_width
 
 @app.route('/upload', methods=['POST'])
-
-# def upload_file():
-#     if 'file' not in request.files:
-#         return 'No file part'
-#     file = request.files['file']
-#     if file.filename == '':
-#         return 'No selected file'
-#     if file:
-#         filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-#         file.save(filepath)
-
-#         bowler_type = video_bowler_type.get(file.filename, 'Unknown')
-#         calculated_speed = calculate_speed(filepath)
-        
-#         if calculated_speed and bowler_type == 'Fast Bowler' and calculated_speed > 150:
-#             random_speed_kph = generate_random_speed('fast') * 1.60934
-#         elif calculated_speed and validate_speed(calculated_speed, bowler_type):
-#             random_speed_kph = calculated_speed * 1.60934
-#         else:
-#             speed_category = 'fast' if bowler_type == 'Fast Bowler' else 'medium' if bowler_type == 'Medium Pacer' else 'slow'
-#             random_speed_kph = generate_random_speed(speed_category)
-
-#         random_speed_mph = random_speed_kph * 0.621371
-#         output_path = os.path.join(app.config['PROCESSED_FOLDER'], 'output_' + file.filename)
-#         points, frame_width = track_ball(filepath, output_path, slow_factor=2)
-#         swing = calculate_swing(points, frame_width)
-#         spin = calculate_spin(points, frame_width)
-#         speed_metrics = f"{random_speed_kph:.2f} kph ({random_speed_mph:.2f} mph)"
-#         swing_metrics = f"Swing: {swing:.2f} cm"
-#         if spin is not None:
-#             spin_metrics = f"Spin: {spin:.2f} cm"
-#         else:
-#             spin_metrics = "Spin: Not enough data to calculate spin"
-#         return render_template('download.html', filename='output_' + file.filename, speed_metrics=speed_metrics, swing_metrics=swing_metrics, spin_metrics=spin_metrics)
-
 def upload_file():
     if 'file' not in request.files:
-        return 'No file part'
+        return jsonify({'error': 'No file part'}), 400
     file = request.files['file']
     if file.filename == '':
-        return 'No selected file'
+        return jsonify({'error': 'No selected file'}), 400
     if file:
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         file.save(filepath)
@@ -271,20 +238,34 @@ def upload_file():
         speed_metrics = f"{random_speed_kph:.2f} kph ({random_speed_mph:.2f} mph)"
         swing_metrics = f"Swing: {swing:.2f} cm"
 
-        return render_template('download.html', filename='output_' + file.filename, speed_metrics=speed_metrics, swing_metrics=swing_metrics, spin_metrics=spin_metrics)
+        return jsonify({
+            'filename': 'output_' + file.filename,
+            'speed_metrics': speed_metrics,
+            'swing_metrics': swing_metrics,
+            'spin_metrics': spin_metrics
+        })
 
-
-
-def calculate_swing(points, frame_width):
-    if len(points) < 2:
-        return 0
-    start_x = points[0][0]
-    end_x = points[-1][0]
-    return abs(end_x - start_x) / frame_width * 100  # Example calculation
-
-@app.route('/download/<filename>')
+@app.route('/download/<filename>', methods=['GET'])
 def download_file(filename):
     return send_from_directory(app.config['PROCESSED_FOLDER'], filename, as_attachment=True)
+
+@app.route('/results/<filename>', methods=['GET'])
+def get_results(filename):
+    processed_file_path = os.path.join(app.config['PROCESSED_FOLDER'], 'output_' + filename)
+    if not os.path.exists(processed_file_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    # Here, we would typically have some way to retrieve the calculated metrics
+    # For simplicity, this example assumes the metrics are saved in a JSON file
+    # You would need to adjust this part to fit your actual implementation
+    results_file_path = os.path.join(app.config['PROCESSED_FOLDER'], filename + '.json')
+    if not os.path.exists(results_file_path):
+        return jsonify({'error': 'Results not found'}), 404
+
+    with open(results_file_path, 'r') as file:
+        results = json.load(file)
+
+    return jsonify(results)
 
 if __name__ == '__main__':
     app.run(debug=True)
