@@ -1,10 +1,13 @@
-from flask import Flask, request, send_from_directory, jsonify
+from flask import Flask, request, send_from_directory, jsonify, render_template
 import os
 from flask_cors import CORS
 import cv2
 from ultralytics import YOLO
 import numpy as np
 import random
+import logging
+import subprocess
+from reencoder import reencode_to_h264
 
 app = Flask(__name__)
 CORS(app)
@@ -12,7 +15,7 @@ CORS(app)
 # Define paths
 UPLOAD_FOLDER = 'uploads'
 PROCESSED_FOLDER = 'processed'
-TRAINED_MODEL_PATH = '/home/anwar/Cricket-Analytics-App/exp1/exp1/weights/last.pt'
+TRAINED_MODEL_PATH = 'C:\\Users\\aleen\\OneDrive\\Desktop\\cricBE\\Cricket-Analytics-App\\last.pt'
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['PROCESSED_FOLDER'] = PROCESSED_FOLDER
@@ -48,14 +51,13 @@ def generate_random_speed(speed_category):
     elif speed_category == 'medium':
         return random.uniform(80, 120)
     elif speed_category == 'fast':
-        return random.uniform(120, 160)
+        return random.uniform(120, 150)
     else:
-        return random.uniform(50, 160)
+        return random.uniform(50, 150)
 
 def find_green_line(frame):
-    """ Detects the green line indicating the ball's trajectory. """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    lower_green = np.array([68, 100, 100])  # Adjusted HSV range
+    lower_green = np.array([68, 100, 100])
     upper_green = np.array([75, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
     kernel = np.ones((5, 5), np.uint8)
@@ -76,7 +78,7 @@ def calculate_speed(video_path):
             break
 
         current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
-        if find_green_line(frame):  # You'll need to define this function
+        if find_green_line(frame):
             if start_frame is None:
                 start_frame = current_frame
         else:
@@ -87,7 +89,7 @@ def calculate_speed(video_path):
 
     if start_frame and end_frame and start_frame < end_frame:
         time_interval = (end_frame - start_frame) / fps
-        distance_meters = 20  # Known distance between wickets
+        distance_meters = 20
         speed_mps = distance_meters / time_interval
         speed_mph = speed_mps * 2.23694
         return speed_mph
@@ -108,13 +110,13 @@ def calculate_swing(points, frame_width):
         return 0
     start_x = points[0][0]
     end_x = points[-1][0]
-    return abs(end_x - start_x) / frame_width * 100  # Example calculation
+    return abs(end_x - start_x) / frame_width * 100
 
 def calculate_spin(points, frame_width):
     if len(points) < 2:
         return None
     spins = [abs(points[i+1][0] - points[i][0]) for i in range(len(points) - 1)]
-    return sum(spins) / len(spins) / frame_width * 100  # Example calculation
+    return sum(spins) / len(spins) / frame_width * 100
 
 def track_ball(input_video_path, output_video_path, slow_factor=2):
     model = YOLO(TRAINED_MODEL_PATH)
@@ -129,7 +131,6 @@ def track_ball(input_video_path, output_video_path, slow_factor=2):
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Calculate the new FPS for the slow-motion effect
     new_fps = fps / slow_factor
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -203,7 +204,7 @@ def upload_file():
         calculated_speed = calculate_speed(filepath)
         
         if calculated_speed is not None:
-            calculated_speed_kph = calculated_speed * 1.60934  # Convert calculated speed to kph
+            calculated_speed_kph = calculated_speed * 1.60934
 
             if bowler_type == 'Fast Bowler' and calculated_speed_kph > 150:
                 random_speed_kph = generate_random_speed('fast')
@@ -211,7 +212,7 @@ def upload_file():
                 random_speed_kph = random.uniform(100, 120)
             elif bowler_type == 'Spinner' and calculated_speed_kph > 100:
                 random_speed_kph = random.uniform(75, 100)
-            elif validate_speed(calculated_speed, bowler_type):  # Validate in mph
+            elif validate_speed(calculated_speed, bowler_type):
                 random_speed_kph = calculated_speed_kph
             else:
                 speed_category = 'fast' if bowler_type == 'Fast Bowler' else 'medium' if bowler_type == 'Medium Pacer' else 'slow'
@@ -225,7 +226,6 @@ def upload_file():
         points, frame_width = track_ball(filepath, output_path, slow_factor=2)
         swing = calculate_swing(points, frame_width)
         
-        # Only show spin metrics if bowler_type is not 'Fast Bowler' or 'Medium Pacer'
         if bowler_type == 'Fast Bowler' or bowler_type == 'Medium Pacer':
             spin_metrics = "Spin: Not enough data to calculate spin"
         else:
@@ -238,8 +238,15 @@ def upload_file():
         speed_metrics = f"{random_speed_kph:.2f} kph ({random_speed_mph:.2f} mph)"
         swing_metrics = f"Swing: {swing:.2f} cm"
 
+        # Re-encode the final output video
+        reencoded_output_path = os.path.join(app.config['PROCESSED_FOLDER'], 'reencoded_output_' + file.filename)
+        try:
+            reencode_to_h264(output_path, reencoded_output_path)
+        except subprocess.CalledProcessError as e:
+            return jsonify({'error': f'Failed to re-encode output video: {e.stderr}'}), 500
+
         return jsonify({
-            'filename': 'output_' + file.filename,
+            'filename': 'reencoded_output_' + file.filename,
             'speed_metrics': speed_metrics,
             'swing_metrics': swing_metrics,
             'spin_metrics': spin_metrics
@@ -255,9 +262,6 @@ def get_results(filename):
     if not os.path.exists(processed_file_path):
         return jsonify({'error': 'File not found'}), 404
 
-    # Here, we would typically have some way to retrieve the calculated metrics
-    # For simplicity, this example assumes the metrics are saved in a JSON file
-    # You would need to adjust this part to fit your actual implementation
     results_file_path = os.path.join(app.config['PROCESSED_FOLDER'], filename + '.json')
     if not os.path.exists(results_file_path):
         return jsonify({'error': 'Results not found'}), 404
